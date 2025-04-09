@@ -36,7 +36,7 @@ def run_gradio():
         gradio_app = gr.mount_gradio_app(
             app=fastapi_app,
             blocks=gradio_demo,
-            path="/"
+            path="/gradio"
         )
         
         # Start the FastAPI server
