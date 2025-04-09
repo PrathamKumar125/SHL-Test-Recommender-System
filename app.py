@@ -55,7 +55,7 @@ async def optimize_memory():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/recommend", response_model=RecommendationResponse)
+@app.post("/recommend", response_model=RecommendationResponse)
 async def recommend(query: str = Query(..., description="Job description text or URL")):
 
     try:
