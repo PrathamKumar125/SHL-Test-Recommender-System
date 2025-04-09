@@ -40,7 +40,6 @@ Thumbs.db
 
 # Docker
 .dockerignore
-Dockerfile
 docker-compose.yml
 
 # Large files and directories

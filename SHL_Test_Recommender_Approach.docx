@@ -1,0 +1,54 @@
+SHL Test Recommender System: Implementation Approach
+
+Problem Statement:
+The project required separating the FastAPI backend from the Gradio frontend, adjusting the Dockerfile for Hugging Face Spaces deployment, and implementing a fallback mechanism when API quotas are exceeded.
+
+Solution Approach:
+
+1. Architecture Separation
+   • Separated the FastAPI backend from the Gradio frontend for better modularity
+   • Created dedicated backend folder with its own requirements and configuration
+   • Implemented CORS middleware to allow cross-origin requests between components
+
+2. Model Selection & Fallback Mechanism
+   • Primary: Google's Gemini API for high-quality text generation
+   • Fallback: Local Qwen2.5-0.5B-Instruct model when API limits are exceeded
+   • Automatic detection of quota/rate limit errors with seamless transition to local model
+   • Health endpoint to report current active model status
+
+3. Web Scraping Functionality
+   • Implemented URL validation to detect job posting links
+   • Used BeautifulSoup for extracting text content from job posting URLs
+   • Applied text cleaning and preprocessing for optimal recommendation quality
+   • Handled various website structures with robust error handling
+
+4. Deployment Configuration
+   • Optimized Dockerfile for Hugging Face Spaces deployment
+   • Configured port detection for different environments (7860 for HF Spaces, 8000 for local)
+   • Implemented non-root user for enhanced security
+   • Added proper caching directories with appropriate permissions
+
+5. Frontend-Backend Connection
+   • Configured frontend to connect to deployed backend via environment variable
+   • Implemented robust error handling for API communication
+   • Created standardized data structures for consistent communication
+
+Technologies & Libraries:
+• FastAPI: Backend API framework
+• Gradio: Frontend interface
+• Sentence Transformers: Semantic embedding generation
+• Hugging Face Transformers: Local model implementation (Qwen)
+• Docker: Containerization for deployment
+• CORS Middleware: Cross-origin resource sharing
+• BeautifulSoup: Web scraping for URL-based job descriptions
+• Requests: HTTP library for fetching web content
+• Pandas: Data manipulation and storage
+• Scikit-learn: Similarity calculations
+• PyTorch: Deep learning framework for models
+
+Performance Considerations:
+• Implemented caching for generated descriptions
+• Optimized model loading with fallback options
+• Configured proper memory management for Docker containers
+• Limited text processing length to prevent resource exhaustion
+• Implemented timeout handling for web scraping to prevent hanging

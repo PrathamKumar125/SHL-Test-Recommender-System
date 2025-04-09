@@ -7,6 +7,9 @@ from bs4 import BeautifulSoup
 import torch
 import gc
 import time
+import os
+import traceback
+import json
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 class SHLRecommender:
@@ -20,12 +23,13 @@ class SHLRecommender:
 
         self.df.columns = [col.strip() for col in self.df.columns]
 
-        try:
-            import os
-            cache_dir = os.path.join(os.getcwd(), 'model_cache')
-            os.makedirs(cache_dir, exist_ok=True)
-            print(f"Using cache directory: {cache_dir}")
+        # Initialize cache directory
+        cache_dir = os.path.join(os.getcwd(), 'model_cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        print(f"Using cache directory: {cache_dir}")
 
+        # Load embedding model
+        try:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder=cache_dir)
             print("Successfully loaded all-MiniLM-L6-v2 model")
         except Exception as e:
@@ -45,56 +49,22 @@ class SHLRecommender:
                 self.embedding_model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
                 print("Created basic embedding model")
 
-        model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+        # Store cache directory for later use
+        self.cache_dir = cache_dir
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
-            trust_remote_code=True,
-            use_fast=True,
-            model_max_length=512,
-        )
+        # Check if Gemini API key is available
+        self.use_gemini = False
+        self.gemini_api_key = os.environ.get('GEMINI_API_KEY')
 
-        try:
-            print(f"Loading Qwen model: {model_id}")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-                torch_dtype=torch.float32,
-                device_map="auto",
-                low_cpu_mem_usage=True,
-                cache_dir=cache_dir,
-                local_files_only=False,  
-                revision="main"
-            )
-            print("Successfully loaded Qwen model")
-        except ValueError as e:
-            print(f"Error with device_map: {str(e)}")
-            try:
-                print("Trying without device_map")
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_id,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float32,
-                    low_cpu_mem_usage=True,
-                    cache_dir=cache_dir
-                )
-                print("Successfully loaded Qwen model without device_map")
-            except Exception as e2:
-                print(f"Error loading Qwen model: {str(e2)}")
-                try:
-                    print("Trying fallback to smaller model: distilgpt2")
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        "distilgpt2",  
-                        cache_dir=cache_dir
-                    )
-                    self.tokenizer = AutoTokenizer.from_pretrained(
-                        "distilgpt2",
-                        cache_dir=cache_dir
-                    )
-                    print("Successfully loaded fallback model")
-                except Exception as e3:
-                    print(f"All model loading attempts failed: {str(e3)}")
-                    raise ValueError("Could not load any language model. Please check your environment and permissions.")
+        if self.gemini_api_key:
+            print("Gemini API key found, will use Gemini API for text generation")
+            self.use_gemini = True
+            # No need to initialize tokenizer and model for Gemini
+            self.model = None
+            self.tokenizer = None
+        else:
+            print("No Gemini API key found, falling back to local model")
+            self._initialize_local_model()
 
         self.create_embeddings()
 
@@ -145,23 +115,40 @@ class SHLRecommender:
 
             prompt = f"Write a short, factual description of '{test_name}', a {test_type} assessment, in 1-2 sentences."
 
-            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=128, padding=True)
+            # Use Gemini API if available
+            if self.use_gemini:
+                try:
+                    generated_text = self._generate_with_gemini(prompt)
+                    # If Gemini API returned empty string (quota exceeded or error), initialize local model
+                    if not generated_text and (self.model is None or self.tokenizer is None):
+                        self._initialize_local_model()
+                except Exception as e:
+                    print(f"Error using Gemini API: {str(e)}")
+                    # Fall back to local model if not initialized
+                    if self.model is None or self.tokenizer is None:
+                        self._initialize_local_model()
+                    generated_text = ""
 
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs.input_ids,
-                    attention_mask=inputs.attention_mask,
-                    max_new_tokens=40,
-                    temperature=0.2,  
-                    top_p=0.95,
-                    do_sample=False,
-                    no_repeat_ngram_size=3 
-                )
+            # If Gemini API failed or is not available, use local model
+            if not self.use_gemini or not generated_text:
+                # Use local model
+                inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=128, padding=True)
 
-            full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        inputs.input_ids,
+                        attention_mask=inputs.attention_mask,
+                        max_new_tokens=40,
+                        temperature=0.2,
+                        top_p=0.95,
+                        do_sample=False,
+                        no_repeat_ngram_size=3
+                    )
 
-            generated_text = full_response.replace(prompt, "").strip()
+                full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+                generated_text = full_response.replace(prompt, "").strip()
 
+            # Check if the generated text is valid
             if len(generated_text) < 20 or "write" in generated_text.lower() or "description" in generated_text.lower():
                 if test_type.lower() in ["cognitive ability", "cognitive", "reasoning"]:
                     description = f"The {test_name} measures cognitive abilities and problem-solving skills."
@@ -184,7 +171,8 @@ class SHLRecommender:
 
             return description
 
-        except Exception:
+        except Exception as e:
+            print(f"Error generating description: {str(e)}")
             if test_type.lower() in ["cognitive ability", "cognitive", "reasoning"]:
                 return f"The {test_name} measures cognitive abilities through structured problem-solving tasks."
             elif test_type.lower() in ["personality", "behavioral"]:
@@ -194,41 +182,188 @@ class SHLRecommender:
             else:
                 return f"The {test_name} assesses {test_type.lower()} capabilities."
 
+    def _generate_with_gemini(self, prompt):
+        try:
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent"
+            headers = {
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.gemini_api_key
+            }
+            data = {
+                "contents": [{
+                    "parts": [{
+                        "text": prompt
+                    }]
+                }],
+                "generationConfig": {
+                    "temperature": 0.2,
+                    "topP": 0.95,
+                    "topK": 40,
+                    "maxOutputTokens": 100
+                }
+            }
+
+            response = requests.post(url, headers=headers, json=data)
+
+            # Check for quota exceeded or rate limit errors
+            if response.status_code in [403, 429, 413]:
+                print(f"API quota exceeded or rate limited: {response.status_code}")
+                # Disable Gemini API for future requests in this session
+                self.use_gemini = False
+                # Initialize local model if not already done
+                if self.model is None or self.tokenizer is None:
+                    self._initialize_local_model()
+                # Return empty string to trigger fallback
+                return ""
+
+            response.raise_for_status()
+
+            result = response.json()
+
+            # Check for error in the response
+            if 'error' in result:
+                error_message = result.get('error', {}).get('message', 'Unknown error')
+                print(f"Gemini API error: {error_message}")
+                if 'quota' in error_message.lower() or 'limit' in error_message.lower() or 'exceed' in error_message.lower():
+                    self.use_gemini = False
+                    if self.model is None or self.tokenizer is None:
+                        self._initialize_local_model()
+                return ""
+
+            if 'candidates' in result and len(result['candidates']) > 0:
+                candidate = result['candidates'][0]
+                if 'content' in candidate and 'parts' in candidate['content']:
+                    parts = candidate['content']['parts']
+                    if len(parts) > 0 and 'text' in parts[0]:
+                        return parts[0]['text'].strip()
+
+            return ""
+        except Exception as e:
+            print(f"Error calling Gemini API: {str(e)}")
+            error_str = str(e).lower()
+            if 'quota' in error_str or 'limit' in error_str or 'exceed' in error_str or 'rate' in error_str:
+                self.use_gemini = False
+                if self.model is None or self.tokenizer is None:
+                    self._initialize_local_model()
+            return ""
+
+    def _initialize_local_model(self):
+        try:
+            print("Initializing local model for text generation")
+            # Initialize Qwen model
+            model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_id,
+                trust_remote_code=True,
+                use_fast=True,
+                model_max_length=512,
+            )
+
+            try:
+                print(f"Loading Qwen model: {model_id}")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float32,
+                    device_map="auto",
+                    low_cpu_mem_usage=True,
+                    cache_dir=self.cache_dir,
+                    local_files_only=False,
+                    revision="main"
+                )
+                print("Successfully loaded Qwen model")
+            except ValueError as e:
+                print(f"Error with device_map: {str(e)}")
+                try:
+                    print("Trying without device_map")
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_id,
+                        trust_remote_code=True,
+                        torch_dtype=torch.float32,
+                        low_cpu_mem_usage=True,
+                        cache_dir=self.cache_dir
+                    )
+                    print("Successfully loaded Qwen model without device_map")
+                except Exception as e2:
+                    print(f"Error loading Qwen model: {str(e2)}")
+                    try:
+                        print("Trying fallback to smaller model: distilgpt2")
+                        self.model = AutoModelForCausalLM.from_pretrained(
+                            "distilgpt2",
+                            cache_dir=self.cache_dir
+                        )
+                        self.tokenizer = AutoTokenizer.from_pretrained(
+                            "distilgpt2",
+                            cache_dir=self.cache_dir
+                        )
+                        print("Successfully loaded fallback model")
+                    except Exception as e3:
+                        print(f"All model loading attempts failed: {str(e3)}")
+                        print(traceback.format_exc())
+                        raise ValueError("Could not load any language model. Please check your environment and permissions.")
+        except Exception as e:
+            print(f"Error initializing local model: {str(e)}")
+            print(traceback.format_exc())
+            raise
+
     def check_health(self):
         try:
             test_prompt = "This is a test prompt to check model health."
 
             start_time = time.time()
-            inputs = self.tokenizer(
-                test_prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=32,
-                padding=True
-            )
-            tokenization_time = time.time() - start_time
-
-            start_time = time.time()
-            with torch.no_grad():
-                _ = self.model.generate(
-                    inputs.input_ids,
-                    attention_mask=inputs.attention_mask,
-                    max_new_tokens=20,
-                    do_sample=True
-                )
-            inference_time = time.time() - start_time
-
-            start_time = time.time()
             self.embedding_model.encode(["Test embedding"])
             embedding_time = time.time() - start_time
 
-            return {
+            health_info = {
                 "status": "healthy",
-                "tokenization_time_ms": round(tokenization_time * 1000, 2),
-                "inference_time_ms": round(inference_time * 1000, 2),
                 "embedding_time_ms": round(embedding_time * 1000, 2),
-                "cache_size": len(self._cache)
+                "cache_size": len(self._cache),
+                "model_type": "gemini" if self.use_gemini else "local"
             }
+
+            # If using Gemini API, test the API
+            if self.use_gemini:
+                try:
+                    start_time = time.time()
+                    test_result = self._generate_with_gemini("Test prompt for Gemini API health check.")
+                    api_time = time.time() - start_time
+
+                    health_info["api_time_ms"] = round(api_time * 1000, 2)
+                    health_info["api_status"] = "healthy" if test_result else "unhealthy"
+                except Exception as e:
+                    health_info["api_status"] = "unhealthy"
+                    health_info["api_error"] = str(e)
+            else:
+                # Test local model
+                try:
+                    start_time = time.time()
+                    inputs = self.tokenizer(
+                        test_prompt,
+                        return_tensors="pt",
+                        truncation=True,
+                        max_length=32,
+                        padding=True
+                    )
+                    tokenization_time = time.time() - start_time
+
+                    start_time = time.time()
+                    with torch.no_grad():
+                        _ = self.model.generate(
+                            inputs.input_ids,
+                            attention_mask=inputs.attention_mask,
+                            max_new_tokens=20,
+                            do_sample=True
+                        )
+                    inference_time = time.time() - start_time
+
+                    health_info["tokenization_time_ms"] = round(tokenization_time * 1000, 2)
+                    health_info["inference_time_ms"] = round(inference_time * 1000, 2)
+                except Exception as e:
+                    health_info["status"] = "unhealthy"
+                    health_info["model_error"] = str(e)
+
+            return health_info
         except Exception as e:
             return {"status": "unhealthy", "error": str(e)}
 

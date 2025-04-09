@@ -1,17 +1,19 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
-from recommender import SHLRecommender
 import uvicorn
+import os
+import sys
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from recommender import SHLRecommender
 from utils.validators import url as is_valid_url
 
 app = FastAPI(
     title="SHL Test Recommender API",
     description="API for recommending SHL tests based on job descriptions or queries",
     version="1.0.0",
-    # Add CORS middleware to allow requests from any origin
-    # This is important for Hugging Face Spaces and Postman
     docs_url="/docs",
     redoc_url="/redoc"
 )
@@ -78,15 +80,6 @@ async def optimize_memory():
 async def recommend(request: RecommendRequest):
     return await process_recommendation(request.query, request.max_recommendations)
 
-# Alternative endpoint for Hugging Face Spaces compatibility
-@app.post("/api/recommend", response_model=RecommendationResponse)
-async def recommend_api(request: RecommendRequest):
-    return await process_recommendation(request.query, request.max_recommendations)
-
-# Direct endpoint with query parameter in URL for testing
-@app.get("/direct-recommend")
-async def direct_recommend(query: str, max_recommendations: int = 10):
-    return await process_recommendation(query, max_recommendations)
 
 async def process_recommendation(query: str, max_recommendations: int):
     try:
@@ -137,4 +130,9 @@ async def process_recommendation(query: str, max_recommendations: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    # Check if running on Hugging Face Spaces
+    IS_HF_SPACE = os.environ.get('SPACE_ID') is not None
+    port = 7860 if IS_HF_SPACE else 8000
+    
+    print(f"Starting FastAPI server on port {port}")
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)

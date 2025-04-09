@@ -24,18 +24,23 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY . .
+COPY ../utils /app/utils
+COPY ../recommender.py /app/recommender.py
 
 # Set proper permissions
 RUN chown -R appuser:appuser /app
 
-# Expose ports for FastAPI and Gradio
-EXPOSE 8000 7860
+# Expose port for FastAPI
+EXPOSE 7860
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV TRANSFORMERS_CACHE=/app/model_cache
 ENV HF_HOME=/app/model_cache
 ENV SENTENCE_TRANSFORMERS_HOME=/app/model_cache
+
+# Gemini API key (will be set during deployment)
+ENV GEMINI_API_KEY=""
 
 # Switch to non-root user
 USER appuser
