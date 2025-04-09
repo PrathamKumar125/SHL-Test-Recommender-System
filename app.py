@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 from recommender import SHLRecommender
@@ -14,7 +14,11 @@ app = FastAPI(
 
 recommender = SHLRecommender()
 
-# Define response models
+# Define request and response models
+class RecommendRequest(BaseModel):
+    query: str  
+    max_recommendations: int = 10 
+
 class Assessment(BaseModel):
     url: str
     adaptive_support: str
@@ -56,16 +60,18 @@ async def optimize_memory():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/recommend", response_model=RecommendationResponse)
-async def recommend(query: str = Query(..., description="Job description text or URL")):
+async def recommend(request: RecommendRequest):
 
+    return await process_recommendation(request.query, request.max_recommendations)
+
+async def process_recommendation(query: str, max_recommendations: int):
     try:
         is_url = is_valid_url(query)
 
-        # Get recommendations
         recommendations = recommender.get_recommendations(
             query,
             is_url=is_url,
-            max_recommendations=10
+            max_recommendations=max_recommendations
         )
 
         formatted_assessments = []
@@ -78,13 +84,11 @@ async def recommend(query: str = Query(..., description="Job description text or
 
             test_type_list = [rec['Test Type']] if rec['Test Type'] and rec['Test Type'] != "Unknown" else ["General Assessment"]
 
-            # Generate a description based on the test name and type
             test_description = recommender.generate_test_description(
                 test_name=rec['Test Name'],
                 test_type=rec['Test Type'] if rec['Test Type'] and rec['Test Type'] != "Unknown" else "General Assessment"
             )
 
-            # Use the generated description
             description = test_description
 
             formatted_assessments.append(
@@ -102,6 +106,10 @@ async def recommend(query: str = Query(..., description="Job description text or
             recommended_assessments=formatted_assessments
         )
     except Exception as e:
+        try:
+            recommender.optimize_memory()
+        except:
+            pass
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
