@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -19,11 +18,32 @@ class SHLRecommender:
         except FileNotFoundError:
             raise FileNotFoundError(f"Data file not found at {data_path}. Please check the path.")
 
-        # Clean column names
         self.df.columns = [col.strip() for col in self.df.columns]
 
-        os.environ['TRANSFORMERS_CACHE'] = './cache'
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        try:
+            import os
+            cache_dir = os.path.join(os.getcwd(), 'model_cache')
+            os.makedirs(cache_dir, exist_ok=True)
+            print(f"Using cache directory: {cache_dir}")
+
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder=cache_dir)
+            print("Successfully loaded all-MiniLM-L6-v2 model")
+        except Exception as e:
+            print(f"Error loading primary model: {str(e)}")
+            try:
+                # Try a different model as fallback
+                print("Trying fallback model: paraphrase-MiniLM-L3-v2")
+                self.embedding_model = SentenceTransformer('paraphrase-MiniLM-L3-v2', cache_folder=cache_dir)
+                print("Successfully loaded fallback model")
+            except Exception as e2:
+                print(f"Error loading fallback model: {str(e2)}")
+                # Create a simple embedding model as last resort
+                from sentence_transformers import models, SentenceTransformer
+                print("Creating basic embedding model from scratch")
+                word_embedding_model = models.Transformer('bert-base-uncased', cache_dir=cache_dir)
+                pooling_model = models.Pooling(word_embedding_model.get_word_embedding_dimension())
+                self.embedding_model = SentenceTransformer(modules=[word_embedding_model, pooling_model])
+                print("Created basic embedding model")
 
         model_id = "Qwen/Qwen2.5-0.5B-Instruct"
 
@@ -35,15 +55,46 @@ class SHLRecommender:
         )
 
         try:
+            print(f"Loading Qwen model: {model_id}")
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 trust_remote_code=True,
                 torch_dtype=torch.float32,
                 device_map="auto",
                 low_cpu_mem_usage=True,
+                cache_dir=cache_dir,
+                local_files_only=False,  
+                revision="main"
             )
+            print("Successfully loaded Qwen model")
         except ValueError as e:
-            raise ValueError(f"Model loading failed: {str(e)}. Ensure you have enough memory or try a different model.")
+            print(f"Error with device_map: {str(e)}")
+            try:
+                print("Trying without device_map")
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True,
+                    cache_dir=cache_dir
+                )
+                print("Successfully loaded Qwen model without device_map")
+            except Exception as e2:
+                print(f"Error loading Qwen model: {str(e2)}")
+                try:
+                    print("Trying fallback to smaller model: distilgpt2")
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        "distilgpt2",  
+                        cache_dir=cache_dir
+                    )
+                    self.tokenizer = AutoTokenizer.from_pretrained(
+                        "distilgpt2",
+                        cache_dir=cache_dir
+                    )
+                    print("Successfully loaded fallback model")
+                except Exception as e3:
+                    print(f"All model loading attempts failed: {str(e3)}")
+                    raise ValueError("Could not load any language model. Please check your environment and permissions.")
 
         self.create_embeddings()
 
@@ -75,62 +126,6 @@ class SHLRecommender:
         except Exception as e:
             return f"Error extracting text from URL: {str(e)}"
 
-    def analyze_job_description(self, text):
-        max_text_length = 1000
-        if len(text) > max_text_length:
-            text = text[:max_text_length] + "..."
-
-        prompt = f"""
-        Analyze this job description and identify key skills and suitable assessment types.
-
-        Job Description: {text}
-
-        Instructions:
-        1. Identify if the job requires: Cognitive abilities, Personality traits, Technical skills, Situational judgment, or Job-specific knowledge
-        2. Provide a brief summary (3-5 sentences) of the key requirements
-        3. DO NOT use code, functions, or programming syntax in your response
-        4. Format your response as plain text only
-        5. Keep your response concise and focused on assessment recommendations
-        """
-
-        inputs = self.tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=512,
-            padding=True
-        )
-
-        attention_mask = inputs.attention_mask
-
-        with torch.no_grad():
-            outputs = self.model.generate(
-                inputs.input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=150,
-                temperature=0.7,
-                top_p=0.9,
-                do_sample=True,
-            )
-
-        analysis = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-        if "Instructions:" in analysis:
-            response = analysis.split("Instructions:")[-1].strip()
-        else:
-            response = analysis.split("Job Description:")[-1].strip()
-
-        response = response.replace("function", "")
-        response = response.replace("{", "")
-        response = response.replace("}", "")
-        response = response.replace(";", "")
-        response = response.replace("//", "")
-        response = response.replace("/*", "")
-        response = response.replace("*/", "")
-
-
-        return response
-
     def optimize_memory(self):
 
         if torch.cuda.is_available():
@@ -143,87 +138,61 @@ class SHLRecommender:
         return {"status": "Memory optimized"}
 
     def generate_test_description(self, test_name, test_type):
-        """Generate a concise, factual description for an SHL test based on its name and type"""
         try:
-            # Use a more structured prompt with explicit constraints to avoid hallucinations
-            prompt = f"""
-            You are an SHL assessment expert. Create a brief, factual description of the SHL assessment named "{test_name}" which is categorized as "{test_type}".
+            cache_key = f"{test_name}_{test_type}"
+            if cache_key in self._cache:
+                return self._cache[cache_key]
 
-            Rules:
-            1. Focus ONLY on what this specific assessment likely measures based on its name and type
-            2. Keep your description to 1-2 short, factual sentences
-            3. DO NOT mention job descriptions, specific positions, or make claims about effectiveness
-            4. DO NOT use phrases like "This assessment is designed to" or "This test helps"
-            5. DO NOT use technical jargon, code syntax, or numbered lists
-            6. DO NOT repeat the instructions or include "Instructions:" in your response
-            7. Start directly with the description
+            prompt = f"Write a short, factual description of '{test_name}', a {test_type} assessment, in 1-2 sentences."
 
-            Example good response: "The Numerical Reasoning assessment measures a candidate's ability to analyze and interpret numerical data and make logical decisions."
-            """
-
-            # Generate the description with stricter parameters
-            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=256, padding=True)
+            inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=128, padding=True)
 
             with torch.no_grad():
                 outputs = self.model.generate(
                     inputs.input_ids,
                     attention_mask=inputs.attention_mask,
-                    max_new_tokens=50,  # Even shorter description
-                    temperature=0.9,  # Lower temperature for more predictable output
-                    top_p=0.85,
-                    do_sample=False,  # Deterministic generation
-                    no_repeat_ngram_size=3  # Prevent repetition
+                    max_new_tokens=40,
+                    temperature=0.2,  
+                    top_p=0.95,
+                    do_sample=False,
+                    no_repeat_ngram_size=3 
                 )
 
-            # Decode and clean up the description
-            description = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-            # Remove the prompt and any instructions
-            if "Rules:" in description:
-                description = description.split("Rules:")[0].strip()
-            if "Example good response:" in description:
-                description = description.split("Example good response:")[1].strip()
-            if "Instructions:" in description:
-                description = description.split("Instructions:")[0].strip()
+            generated_text = full_response.replace(prompt, "").strip()
 
-            # Remove quotes if present
-            description = description.strip('"').strip()
-
-            # Remove any remaining prompt text
-            description = description.replace(prompt.strip(), "").strip()
-
-            # Additional cleaning
-            description = description.replace("function", "")
-            description = description.replace("{", "")
-            description = description.replace("}", "")
-            description = description.replace(";", "")
-            description = description.replace("1.", "")
-            description = description.replace("2.", "")
-            description = description.replace("3.", "")
-
-            # If the description is still problematic, use a template
-            if len(description) < 20 or "job description" in description.lower() or "this assessment is designed" in description.lower():
+            if len(generated_text) < 20 or "write" in generated_text.lower() or "description" in generated_text.lower():
                 if test_type.lower() in ["cognitive ability", "cognitive", "reasoning"]:
-                    description = f"The {test_name} measures a candidate's {test_type.lower()} through structured problem-solving tasks."
-                elif test_type.lower() in ["personality", "behavioral"]:
-                    description = f"The {test_name} assesses a candidate's behavioral tendencies and personality traits relevant to workplace performance."
-                elif "technical" in test_type.lower():
-                    description = f"The {test_name} evaluates a candidate's technical knowledge and skills in {test_type.lower().replace('technical', '').strip()} areas."
+                    description = f"The {test_name} measures cognitive abilities and problem-solving skills."
+                elif "numerical" in test_name.lower() or "numerical" in test_type.lower():
+                    description = f"The {test_name} assesses numerical reasoning and data analysis abilities."
+                elif "verbal" in test_name.lower() or "verbal" in test_type.lower():
+                    description = f"The {test_name} evaluates verbal reasoning and language comprehension skills."
+                elif "personality" in test_type.lower() or "behavioral" in test_type.lower():
+                    description = f"The {test_name} assesses behavioral tendencies and personality traits in workplace contexts."
+                elif "technical" in test_type.lower() or any(tech in test_name.lower() for tech in ["java", "python", ".net", "sql", "coding"]):
+                    description = f"The {test_name} evaluates technical knowledge and programming skills."
                 else:
-                    description = f"The {test_name} assesses a candidate's {test_type.lower()} capabilities through standardized testing methods."
+                    description = f"The {test_name} assesses candidate suitability through standardized methods."
+            else:
+                description = generated_text
+
+            if len(self._cache) >= self._cache_size:
+                self._cache.pop(next(iter(self._cache)))
+            self._cache[cache_key] = description
 
             return description
 
         except Exception:
-            # Return a template-based description if there's an error
             if test_type.lower() in ["cognitive ability", "cognitive", "reasoning"]:
-                return f"The {test_name} measures a candidate's cognitive abilities through structured problem-solving tasks."
+                return f"The {test_name} measures cognitive abilities through structured problem-solving tasks."
             elif test_type.lower() in ["personality", "behavioral"]:
-                return f"The {test_name} assesses a candidate's behavioral tendencies and personality traits."
+                return f"The {test_name} assesses behavioral tendencies and personality traits."
             elif "technical" in test_type.lower():
-                return f"The {test_name} evaluates a candidate's technical knowledge and skills."
+                return f"The {test_name} evaluates technical knowledge and skills."
             else:
-                return f"The {test_name} assesses a candidate's {test_type.lower()} capabilities."
+                return f"The {test_name} assesses {test_type.lower()} capabilities."
 
     def check_health(self):
         try:
@@ -264,7 +233,6 @@ class SHLRecommender:
             return {"status": "unhealthy", "error": str(e)}
 
     def get_recommendations(self, query, is_url=False, max_recommendations=10):
-        # Clear cache after every request as requested
         self._cache.clear()
 
         if is_url:
@@ -276,8 +244,6 @@ class SHLRecommender:
         if len(text) > max_text_length:
             text = text[:max_text_length] + "..."
 
-        # Get embeddings directly from the text without using job analysis
-        # This prevents hallucination in job descriptions
         query_embedding = self.embedding_model.encode(text[:1000])
 
         similarity_scores = cosine_similarity(
