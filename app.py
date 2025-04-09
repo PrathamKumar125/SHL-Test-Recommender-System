@@ -9,15 +9,29 @@ from utils.validators import url as is_valid_url
 app = FastAPI(
     title="SHL Test Recommender API",
     description="API for recommending SHL tests based on job descriptions or queries",
-    version="1.0.0"
+    version="1.0.0",
+    # Add CORS middleware to allow requests from any origin
+    # This is important for Hugging Face Spaces and Postman
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+# Add CORS middleware to allow requests from any origin
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
 )
 
 recommender = SHLRecommender()
 
 # Define request and response models
 class RecommendRequest(BaseModel):
-    query: str  
-    max_recommendations: int = 10 
+    query: str
+    max_recommendations: int = 10
 
 class Assessment(BaseModel):
     url: str
@@ -51,6 +65,12 @@ async def health_check():
 async def root():
     return {"message": "Welcome to the SHL Test Recommender API."}
 
+# Test endpoint that accepts both GET and POST methods
+@app.get("/test")
+@app.post("/test")
+async def test_endpoint():
+    return {"status": "success", "message": "Test endpoint is working correctly"}
+
 @app.post("/optimize")
 async def optimize_memory():
     try:
@@ -59,10 +79,20 @@ async def optimize_memory():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Main recommend endpoint
 @app.post("/recommend", response_model=RecommendationResponse)
 async def recommend(request: RecommendRequest):
-
     return await process_recommendation(request.query, request.max_recommendations)
+
+# Alternative endpoint for Hugging Face Spaces compatibility
+@app.post("/api/recommend", response_model=RecommendationResponse)
+async def recommend_api(request: RecommendRequest):
+    return await process_recommendation(request.query, request.max_recommendations)
+
+# Direct endpoint with query parameter in URL for testing
+@app.get("/direct-recommend")
+async def direct_recommend(query: str, max_recommendations: int = 10):
+    return await process_recommendation(query, max_recommendations)
 
 async def process_recommendation(query: str, max_recommendations: int):
     try:

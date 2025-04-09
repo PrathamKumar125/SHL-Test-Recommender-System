@@ -1,8 +1,10 @@
 import gradio as gr
 import pandas as pd
+import os
 
 from recommender import SHLRecommender
 from utils.validators import url
+from fastapi import FastAPI
 
 recommender = SHLRecommender()
 
@@ -88,6 +90,17 @@ with gr.Blocks(title="SHL Test Recommender") as demo:
         inputs=[input_text, max_recommendations],
         outputs=[recommendations_output]
     )
+
+# Method to mount FastAPI app to Gradio for Hugging Face Spaces
+def mount_gradio_app(app: FastAPI, path: str):
+    """Mount a FastAPI app to a Gradio app"""
+    # This is a workaround for Hugging Face Spaces
+    # It allows the FastAPI app to be accessed through the Gradio app
+    try:
+        demo.app = app
+        print(f"Successfully mounted FastAPI app to Gradio at path: {path}")
+    except Exception as e:
+        print(f"Error mounting FastAPI app to Gradio: {str(e)}")
 
 if __name__ == "__main__":
     demo.launch()
