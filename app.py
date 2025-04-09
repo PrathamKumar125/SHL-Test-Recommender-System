@@ -65,12 +65,6 @@ async def health_check():
 async def root():
     return {"message": "Welcome to the SHL Test Recommender API."}
 
-# Test endpoint that accepts both GET and POST methods
-@app.get("/test")
-@app.post("/test")
-async def test_endpoint():
-    return {"status": "success", "message": "Test endpoint is working correctly"}
-
 @app.post("/optimize")
 async def optimize_memory():
     try:
