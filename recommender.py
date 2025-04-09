@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -21,6 +22,7 @@ class SHLRecommender:
         # Clean column names
         self.df.columns = [col.strip() for col in self.df.columns]
 
+        os.environ['TRANSFORMERS_CACHE'] = './cache'
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
         model_id = "Qwen/Qwen2.5-0.5B-Instruct"
