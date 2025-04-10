@@ -2,6 +2,20 @@
 
 This system recommends SHL tests based on job descriptions or natural language queries.
 
+## Huggingface Space Deployment:
+- **Frontend**: https://huggingface.co/spaces/pratham0011/SHL-Test-Recommender-Gradio
+- **Backend**: https://huggingface.co/spaces/pratham0011/SHL-Test-Recommender-API
+
+<br>
+
+![Screenshot 2025-04-10 050728](https://github.com/user-attachments/assets/d5df89e1-35f6-4304-8eef-3d7999246f69)
+
+<br>
+
+![image](https://github.com/user-attachments/assets/64c6b48e-461c-4cc0-a2bd-c25df851ea2d)
+
+
+<br>
 ## Project Structure
 
 The project is divided into two main components:
